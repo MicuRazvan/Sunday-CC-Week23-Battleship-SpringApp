@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Battleship - Drag & Drop</title>
+    <style>
+        :root {
+            --water: #006994;
+            --ship: #7f8c8d;
+            --hit: #e74c3c;
+            --miss: #ecf0f1;
+            --valid: rgba(46, 204, 113, 0.6);
+            --invalid: rgba(231, 76, 60, 0.6);
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 { margin-top: 20px; letter-spacing: 5px; color: #f1c40f; }
+
+        #start-btn {
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            background: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 20px;
+            transition: background 0.3s;
+        }
+
+        #start-btn:hover { background: #2ecc71; }
+
+        .status-msg {
+            height: 30px;
+            font-size: 1.2rem;
+            color: #f1c40f;
+            margin-bottom: 20px;
+        }
+
+        .game-area {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            padding: 20px;
+            opacity: 0;
+            transition: opacity 0.5s;
+        }
+
+        .game-area.visible { opacity: 1; }
+
+        /* Sidebar Styling */
+        .sidebar {
+            width: 220px;
+            background: #2c3e50;
+            padding: 20px;
+            border-radius: 10px;
+            border: 2px solid #34495e;
+        }
+
+        .ship-item {
+            background: #34495e;
+            margin: 10px 0;
+            padding: 12px;
+            border-radius: 5px;
+            cursor: grab;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid #444;
+            user-select: none;
+        }
+
+        .ship-item:active { cursor: grabbing; }
+
+        .ship-item button {
+            background: #95a5a6;
+            border: none;
+            color: white;
+            padding: 5px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        /* Grid Styling */
+        .grid-wrapper h3 { text-align: center; margin-bottom: 10px; color: #bdc3c7; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(10, 35px);
+            grid-template-rows: repeat(10, 35px);
+            gap: 1px;
+            background: #444;
+            border: 3px solid #34495e;
+        }
+
+        .cell {
+            width: 35px;
+            height: 35px;
+            background: var(--water);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        /* Board Cell States */
+        .cell.S { background: var(--ship); }
+        .cell.H { background: var(--hit); color: white; animation: pulse 0.5s; }
+        .cell.M { background: var(--miss); color: #2c3e50; }
+
+        /* Drag Over Highlights */
+        .preview-valid { background: var(--valid) !important; outline: 2px solid #2ecc71; }
+        .preview-invalid { background: var(--invalid) !important; outline: 2px solid #e74c3c; }
+
+        .enemy-cell { cursor: crosshair; transition: background 0.2s; }
+        .enemy-cell:hover:not(.H):not(.M) { background: #0081b4; }
+
+        .hidden { display: none; }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+
+<h1>BATTLESHIP</h1>
+
+<button id="start-btn" onclick="initGame()">Start Game</button>
+<div id="status" class="status-msg">Press Start to Play!</div>
+
+<div id="ui-container" class="game-area">
+
+    <!-- Ship Inventory (Left) -->
+    <div id="sidebar" class="sidebar">
+        <h3 style="margin-top:0">Your Fleet</h3>
+        <p style="font-size: 0.8rem; color: #bdc3c7;">Drag ships to your board. Use 'H/V' to rotate.</p>
+        <div id="ship-list"></div>
+    </div>
+
+    <!-- Player Board (Middle) -->
+    <div class="grid-wrapper">
+        <h3>Player Board</h3>
+        <div id="p-grid" class="grid" ondragover="allowDrop(event)" ondrop="handleDrop(event)"></div>
+    </div>
+
+    <!-- Enemy Board (Right) -->
+    <div id="enemy-area" class="grid-wrapper hidden">
+        <h3>Enemy Board</h3>
+        <div id="e-grid" class="grid"></div>
+    </div>
+
+</div>
+
+<script>
+    let gameState = {};
+    let draggedShip = null;
+
+    async function initGame() {
+        const res = await fetch('/api/start', { method: 'POST' });
+        gameState = await res.json();
+
+        document.getElementById('start-btn').innerText = "Restart Game";
+        document.getElementById('ui-container').classList.add('visible');
+        document.getElementById('enemy-area').classList.add('hidden');
+        document.getElementById('sidebar').classList.remove('hidden');
+
+        render();
+    }
+
+    function render() {
+        document.getElementById('status').innerText = gameState.status;
+
+        // Draw Player Board
+        renderGrid('p-grid', gameState.playerBoard, false);
+
+        // Handle Phase Transitions
+        if (gameState.placementComplete) {
+            document.getElementById('enemy-area').classList.remove('hidden');
+            document.getElementById('sidebar').classList.add('hidden');
+            renderGrid('e-grid', gameState.computerBoard, true);
+        } else {
+            renderShipList();
+        }
+    }
+
+    function renderShipList() {
+        const container = document.getElementById('ship-list');
+        container.innerHTML = '';
+        gameState.shipsToPlace.forEach(shipStr => {
+            const [name, size] = shipStr.split('-');
+            const item = document.createElement('div');
+            item.className = 'ship-item';
+            item.draggable = true;
+            item.innerHTML = `
+                <span>${name} (${size})</span>
+                <button onclick="toggleDir(event, '${name}')" id="dir-${name}">H</button>
+            `;
+
+            item.ondragstart = (e) => {
+                draggedShip = {
+                    name: name,
+                    size: parseInt(size),
+                    dir: document.getElementById('dir-' + name).innerText
+                };
+            };
+            container.appendChild(item);
+        });
+    }
+
+    function toggleDir(e, name) {
+        e.stopPropagation();
+        const btn = document.getElementById('dir-' + name);
+        btn.innerText = btn.innerText === 'H' ? 'V' : 'H';
+    }
+
+    function renderGrid(gridId, boardData, isEnemy) {
+        const grid = document.getElementById(gridId);
+        grid.innerHTML = '';
+
+        for (let r = 0; r < 10; r++) {
+            for (let c = 0; c < 10; c++) {
+                const cell = document.createElement('div');
+                const value = boardData[r][c]; // '~', 'S', 'H', 'M'
+
+                cell.className = 'cell';
+                cell.dataset.r = r;
+                cell.dataset.c = c;
+
+                // Apply styles
+                if (value === 'H') { cell.classList.add('H'); cell.innerText = 'X'; }
+                else if (value === 'M') { cell.classList.add('M'); cell.innerText = '•'; }
+                else if (value === 'S' && !isEnemy) { cell.classList.add('S'); }
+
+                // Enemy Board Interactions
+                if (isEnemy && value !== 'H' && value !== 'M' && !gameState.gameOver) {
+                    cell.classList.add('enemy-cell');
+                    cell.onclick = () => handleAttack(r, c);
+                }
+
+                // Player Board Drag Over Events
+                if (!isEnemy && !gameState.placementComplete) {
+                    cell.ondragenter = (e) => handleDragEnter(r, c);
+                }
+
+                grid.appendChild(cell);
+            }
+        }
+    }
+
+    // --- Drag and Drop Logic ---
+
+    function handleDragEnter(r, c) {
+        if (!draggedShip) return;
+
+        // Clear previous previews
+        document.querySelectorAll('#p-grid .cell').forEach(el => {
+            el.classList.remove('preview-valid', 'preview-invalid');
+        });
+
+        const isH = draggedShip.dir === 'H';
+        let canPlace = true;
+        let coords = [];
+
+        for (let i = 0; i < draggedShip.size; i++) {
+            let currR = isH ? r : r + i;
+            let currC = isH ? c + i : c;
+
+            if (currR < 10 && currC < 10) {
+                coords.push({r: currR, c: currC});
+                if (gameState.playerBoard[currR][currC] === 'S') canPlace = false;
+            } else {
+                canPlace = false;
+            }
+        }
+
+        coords.forEach(coord => {
+            const target = document.querySelector(`#p-grid .cell[data-r="${coord.r}"][data-c="${coord.c}"]`);
+            if (target) target.classList.add(canPlace ? 'preview-valid' : 'preview-invalid');
+        });
+    }
+
+    function allowDrop(e) { e.preventDefault(); }
+
+    async function handleDrop(e) {
+        e.preventDefault();
+        if (!draggedShip) return;
+
+        const target = e.target.closest('.cell');
+        if (!target) return;
+
+        const r = target.dataset.r;
+        const c = target.dataset.c;
+
+        const res = await fetch('/api/place', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                r: r,
+                c: c,
+                size: draggedShip.size,
+                dir: draggedShip.dir,
+                name: draggedShip.name
+            })
+        });
+
+        gameState = await res.json();
+        draggedShip = null;
+        render();
+    }
+
+    // --- Attack Logic ---
+
+    async function handleAttack(r, c) {
+        if (gameState.gameOver) return;
+
+        const res = await fetch('/api/attack', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ r: r, c: c })
+        });
+
+        gameState = await res.json();
+        render();
+    }
+</script>
+</body>
+</html>
